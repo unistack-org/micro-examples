@@ -6,14 +6,18 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
+
+	kgo "github.com/twmb/franz-go/pkg/kgo"
+	"github.com/twmb/franz-go/pkg/sasl/plain"
 
 	//"github.com/golang-migrate/migrate/v4"
 	//"github.com/golang-migrate/migrate/v4/database/sqlite"
 	//"github.com/golang-migrate/migrate/v4/source/iofs"
-	"github.com/unistack-org/micro-examples/http/handler"
-	pb "github.com/unistack-org/micro-examples/http/proto"
-	httpcli "go.unistack.org/micro-client-http/v3"
+	"github.com/unistack-org/micro-examples/grpc/handler"
+	bkgo "go.unistack.org/micro-broker-kgo/v3"
 	jsoncodec "go.unistack.org/micro-codec-json/v3"
+	protocodec "go.unistack.org/micro-codec-proto/v3"
 	yamlcodec "go.unistack.org/micro-codec-yaml/v3"
 	envconfig "go.unistack.org/micro-config-env/v3"
 	fileconfig "go.unistack.org/micro-config-file/v3"
@@ -25,6 +29,7 @@ import (
 	requestidwrapper "go.unistack.org/micro-wrapper-requestid/v3"
 	validatorwrapper "go.unistack.org/micro-wrapper-validator/v3"
 	"go.unistack.org/micro/v3"
+	"go.unistack.org/micro/v3/broker"
 	"go.unistack.org/micro/v3/client"
 	"go.unistack.org/micro/v3/config"
 	"go.unistack.org/micro/v3/logger"
@@ -43,7 +48,7 @@ import (
 var fs embed.FS
 
 var (
-	appName    = "http"
+	appName    = "grpc"
 	BuildDate  string
 	AppVersion string
 )
@@ -158,10 +163,41 @@ func main() {
 		appName = cfg.Server.Name
 	}
 
+	kopts := []kgo.Opt{
+		kgo.FetchMaxWait(1 * time.Second),
+		kgo.StopProducerOnDataLossDetected(),
+		kgo.ClientID(cfg.Server.Name),
+		kgo.ProducerBatchCompression(kgo.NoCompression()),
+		kgo.MaxBufferedRecords(1000),
+		kgo.RequiredAcks(kgo.LeaderAck()),
+		kgo.ProducerBatchMaxBytes(1 * 1024 * 1024),
+		kgo.ProducerLinger(200 * time.Microsecond),
+		kgo.ProducerBatchMaxBytes(4 * 1024 * 1024),
+		kgo.FetchMaxWait(1 * time.Second),
+		kgo.FetchMaxBytes(1 * 1024 * 1024),
+	}
+	if len(cfg.Broker.Login) > 0 && len(cfg.Broker.Passw) > 0 {
+		kopts = append(kopts,
+			kgo.SASL((plain.Auth{User: cfg.Broker.Login, Pass: cfg.Broker.Passw}).AsMechanism()),
+		)
+	}
+
+	b := bkgo.NewBroker(
+		broker.Addrs(cfg.Broker.Address...),
+		broker.Codec(jsoncodec.NewCodec()),
+		broker.Context(ctx),
+		bkgo.CommitInterval(1*time.Second),
+		bkgo.Options(kopts...),
+	)
+	if err = b.Init(); err != nil {
+		logger.Fatalf(ctx, "broker init err: %v", err)
+	}
+
 	svc := micro.NewService(
 		micro.Context(ctx),
-		micro.Client(httpcli.NewClient()),
-		micro.Server(httpsrv.NewServer()),
+		micro.Server(server.NewServer(server.Broker(b))),
+		micro.Client(client.NewClient(client.Broker(b))),
+		micro.Broker(b),
 	)
 
 	if err = svc.Init(
@@ -175,30 +211,32 @@ func main() {
 		server.Name(cfg.Server.Name),
 		server.Version(cfg.Server.Version),
 		server.Address(cfg.Server.Address),
-		server.Codec("application/json", jsoncodec.NewCodec()),
+		server.Codec("application/grpc", protocodec.NewCodec()),
+		server.Codec("application/grpc+proto", protocodec.NewCodec()),
 		server.Context(ctx),
-		server.WrapHandler(recoverywrapper.NewServerHandlerWrapper()),
-		server.WrapHandler(requestidwrapper.NewServerHandlerWrapper()),
-		server.WrapHandler(loggerwrapper.NewServerHandlerWrapper(
+		server.WrapSubscriber(recoverywrapper.NewServerSubscriberWrapper()),
+		server.WrapSubscriber(requestidwrapper.NewServerSubscriberWrapper()),
+		server.WrapSubscriber(loggerwrapper.NewServerSubscriberWrapper(
 			loggerwrapper.WithLogger(logger.DefaultLogger),
 			loggerwrapper.WithLevel(logger.InfoLevel),
 		)),
-		server.WrapHandler(meterwrapper.NewServerHandlerWrapper(
+		server.WrapSubscriber(meterwrapper.NewServerSubscriberWrapper(
 			meterwrapper.ServiceName(svc.Server().Options().Name),
 			meterwrapper.ServiceVersion(svc.Server().Options().Version),
 			meterwrapper.ServiceID(svc.Server().Options().ID),
 		)),
-		server.WrapHandler(tracerwrapper.NewServerHandlerWrapper(
+		server.WrapSubscriber(tracerwrapper.NewServerSubscriberWrapper(
 			tracerwrapper.WithTracer(tracer.DefaultTracer),
 		)),
-		server.WrapHandler(validatorwrapper.NewServerHandlerWrapper()),
+		server.WrapSubscriber(validatorwrapper.NewServerSubscriberWrapper()),
 	); err != nil {
 		logger.Fatalf(ctx, "server init err: %v", err)
 	}
 
 	if err = svc.Client().Init(
-		client.ContentType("application/json"),
-		client.Codec("application/json", jsoncodec.NewCodec()),
+		client.ContentType("application/grpc"),
+		client.Codec("application/grpc", protocodec.NewCodec()),
+		client.Codec("application/grpc+proto", protocodec.NewCodec()),
 		client.Wrap(requestidwrapper.NewClientWrapper()),
 		client.Wrap(loggerwrapper.NewClientWrapper(
 			loggerwrapper.WithLogger(logger.DefaultLogger),
@@ -248,8 +286,11 @@ func main() {
 		logger.Fatalf(ctx, "failed to run http srv: %v", err)
 	}
 
-	if err := pb.RegisterExampleServiceServer(svc.Server(), h); err != nil {
-		logger.Fatalf(ctx, "failed to register http handler: %v", err)
+	if err := micro.RegisterSubscriber(cfg.App.Topic, svc.Server(), h,
+		server.SubscriberGroup(appName),
+		server.SubscriberAck(true),
+	); err != nil {
+		logger.Fatalf(ctx, "failed to register pubsub handler: %v", err)
 	}
 
 	if err := svc.Run(); err != nil {

@@ -186,7 +186,7 @@ func main() {
 			loggerwrapper.WithLogger(logger.DefaultLogger),
 			loggerwrapper.WithLevel(logger.InfoLevel),
 		)),
-		server.WrapHandler(meterwrapper.NewHandlerWrapper(
+		server.WrapHandler(meterwrapper.NewServerHandlerWrapper(
 			meterwrapper.ServiceName(svc.Server().Options().Name),
 			meterwrapper.ServiceVersion(svc.Server().Options().Version),
 			meterwrapper.ServiceID(svc.Server().Options().ID),

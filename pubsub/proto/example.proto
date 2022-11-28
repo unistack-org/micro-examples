@@ -1,0 +1,19 @@
+syntax = "proto3";
+
+package example;
+
+option go_package = "go.unistack.org/micro-examples/pubsub/proto;pb";
+
+import "tag/tag.proto";
+import "google/protobuf/wrappers.proto";
+
+
+message HelloReq {
+};
+
+message HelloRsp {
+};
+
+message Error {
+	string msg = 1;
+};

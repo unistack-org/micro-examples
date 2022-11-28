@@ -21,7 +21,7 @@ require (
 	go.unistack.org/micro-wrapper-recovery/v3 v3.8.3
 	go.unistack.org/micro-wrapper-requestid/v3 v3.8.1
 	go.unistack.org/micro-wrapper-validator/v3 v3.1.2
-	go.unistack.org/micro/v3 v3.9.14
+	go.unistack.org/micro/v3 v3.9.15
 	google.golang.org/protobuf v1.28.1
 	modernc.org/sqlite v1.19.5
 
