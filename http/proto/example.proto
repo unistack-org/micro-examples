@@ -1,0 +1,37 @@
+syntax = "proto3";
+
+package example;
+
+option go_package = "go.unistack.org/micro-examples/http/proto;pb";
+
+import "tag/tag.proto";
+import "api/annotations.proto";
+import "openapiv3/annotations.proto";
+import "google/protobuf/wrappers.proto";
+
+service ExampleService {
+	rpc Hello(HelloReq) returns (HelloRsp) {
+		option (micro.openapiv3.openapiv3_operation) = {
+      operation_id: "Hello";
+      responses: {
+        default: {
+          reference: {
+            _ref: ".example.Error";
+          };
+        };
+      };
+    };
+		option (micro.api.http) = { post: "/v1/example/hello"; body: "*"; };
+		option (micro.api.micro_method) = { timeout: "5s"; };
+  };
+};
+
+message HelloReq {
+};
+
+message HelloRsp {
+};
+
+message Error {
+	string msg = 1;
+};
